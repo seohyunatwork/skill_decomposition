@@ -118,9 +118,9 @@ def visualize_episode(
 
     legend_patches = [
         mpatches.Patch(color=PRIMITIVE_COLORS[p], label=p.value.capitalize())
-        for p in [PrimitiveType.REACH, PrimitiveType.GRASP,
-                  PrimitiveType.MOVE,  PrimitiveType.RELEASE,
-                  PrimitiveType.UNKNOWN]
+        for p in [PrimitiveType.IDLE,  PrimitiveType.REACH,
+                  PrimitiveType.GRASP, PrimitiveType.MOVE,
+                  PrimitiveType.RELEASE]
     ]
     fig.legend(
         handles=legend_patches,
@@ -159,8 +159,9 @@ def visualize_summary(all_episodes: list, output_dir: str) -> str:
 
     for col, arm in enumerate(("left", "right")):
         ax = axes[col]
-        for ptype in [PrimitiveType.REACH, PrimitiveType.GRASP,
-                      PrimitiveType.MOVE,  PrimitiveType.RELEASE]:
+        for ptype in [PrimitiveType.IDLE,  PrimitiveType.REACH,
+                      PrimitiveType.GRASP, PrimitiveType.MOVE,
+                      PrimitiveType.RELEASE]:
             key = f"{arm}-{ptype.value}"
             if key not in durations:
                 continue

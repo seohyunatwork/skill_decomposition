@@ -3,20 +3,20 @@ from dataclasses import dataclass
 
 
 class PrimitiveType(Enum):
-    REACH = "reach"       # gripper open, arm moving toward object
-    GRASP = "grasp"       # gripper closing around object
-    MOVE = "move"         # gripper closed, transporting object
-    RELEASE = "release"   # gripper opening to place object
-    UNKNOWN = "unknown"   # arm inactive / signal unclear
+    IDLE    = "idle"     # arm stationary, no significant EE motion
+    REACH   = "reach"    # arm moving toward object, gripper open
+    GRASP   = "grasp"    # gripper closing around object
+    MOVE    = "move"     # gripper closed, transporting object
+    RELEASE = "release"  # gripper opening to place object
 
 
 # Colour map for visualisation
 PRIMITIVE_COLORS = {
+    PrimitiveType.IDLE:    "#9E9E9E",  # grey
     PrimitiveType.REACH:   "#4CAF50",  # green
     PrimitiveType.GRASP:   "#FF9800",  # orange
     PrimitiveType.MOVE:    "#2196F3",  # blue
     PrimitiveType.RELEASE: "#E91E63",  # pink
-    PrimitiveType.UNKNOWN: "#9E9E9E",  # grey
 }
 
 

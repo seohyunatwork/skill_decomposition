@@ -1,30 +1,26 @@
 """
-Gripper-state-machine based primitive skill segmenter.
+EE-speed + gripper-velocity finite-state machine for primitive skill segmentation.
 
-Algorithm
----------
-1. Extract normalised gripper signal G[t] ∈ [0,1]  (1 = fully open, 0 = fully closed)
-2. Smooth with a Gaussian filter to suppress sensor noise
-3. Compute per-frame velocity  V[t] = dG/dt  (normalised units / second)
-4. Run a finite-state machine with hysteresis:
+State machine
+-------------
+  IDLE    ──(ee_speed > thr)───────────────────► REACH
+  REACH   ──(ee_speed ≤ thr)──────────────────► IDLE
+  REACH   ──(gripper_vel < closing_thr)───────► GRASP
+  GRASP   ──(ee_speed > thr)──────────────────► MOVE
+  GRASP   ──(gripper_vel > opening_thr)───────► REACH   (aborted grasp)
+  MOVE    ──(gripper_vel > opening_thr)───────► RELEASE
+  RELEASE ──(gripper_norm > open_thr, slow EE)──► IDLE
+  RELEASE ──(gripper_norm > open_thr, fast EE)──► REACH
+  RELEASE ──(gripper_vel < closing_thr)───────► MOVE    (re-grasped)
 
-     REACH  ──(V < closing_vel)──►  GRASP
-     GRASP  ──(G < closed_thresh)──► MOVE
-     GRASP  ──(V > opening_vel)───► REACH   (abort: never got contact)
-     MOVE   ──(V > opening_vel)───► RELEASE
-     RELEASE──(G > open_thresh)───► REACH   (cycle complete)
-     RELEASE──(V < closing_vel)───► MOVE    (abort: gripper re-closed)
-
-5. Merge consecutive frames with the same label into PrimitiveSegment objects
-6. Drop segments shorter than min_segment_frames (noise artefacts)
-7. If the gripper barely moves across the whole episode (arm inactive),
-   label all frames UNKNOWN.
+RELEASE can only be reached from MOVE (i.e., after a GRASP cycle).
 """
 
 import numpy as np
 from scipy.ndimage import gaussian_filter1d
 
 from .primitives import PrimitiveType, PrimitiveSegment
+from ..kinematics.fk import fk_trajectory
 
 
 class PrimitiveSegmenter:
@@ -36,22 +32,6 @@ class PrimitiveSegmenter:
     # ------------------------------------------------------------------
 
     def segment_episode(self, states: np.ndarray, episode_index: int) -> dict:
-        """
-        Decompose a single episode into primitive segments for both arms.
-
-        Parameters
-        ----------
-        states : np.ndarray, shape [T, state_dim]
-        episode_index : int
-
-        Returns
-        -------
-        dict with keys 'left' and 'right', each containing:
-          - 'segments': list[PrimitiveSegment]
-          - 'frame_labels': np.ndarray[PrimitiveType], length T
-          - 'gripper_norm': np.ndarray, length T
-          - 'gripper_vel': np.ndarray, length T
-        """
         cfg = self.cfg
         results = {}
 
@@ -60,12 +40,13 @@ class PrimitiveSegmenter:
             ("right", cfg.right_gripper_idx, cfg.right_arm_indices),
         ]:
             gripper_raw = states[:, gripper_idx]
-            arm_joints  = states[:, arm_indices]
 
             g_norm, g_vel = self._preprocess_gripper(gripper_raw)
-            frame_labels  = self._run_state_machine(g_norm, g_vel)
+            ee_speed      = self._compute_ee_speed(states, arm_indices)
+            frame_labels  = self._run_state_machine(g_norm, g_vel, ee_speed)
 
-            segments = self._labels_to_segments(
+            arm_joints = states[:, arm_indices]
+            segments   = self._labels_to_segments(
                 frame_labels, g_norm, g_vel, arm_joints,
                 arm, episode_index
             )
@@ -75,6 +56,7 @@ class PrimitiveSegmenter:
                 "frame_labels": frame_labels,
                 "gripper_norm": g_norm,
                 "gripper_vel":  g_vel,
+                "ee_speed":     ee_speed,
             }
 
         return results
@@ -84,13 +66,12 @@ class PrimitiveSegmenter:
     # ------------------------------------------------------------------
 
     def _preprocess_gripper(self, raw: np.ndarray):
-        """Smooth and normalise raw gripper signal; compute velocity."""
-        smoothed = gaussian_filter1d(raw.astype(float), sigma=self.cfg.smooth_window / 3)
+        sigma    = self.cfg.smooth_window / 3
+        smoothed = gaussian_filter1d(raw.astype(float), sigma=sigma)
 
         g_min, g_max = smoothed.min(), smoothed.max()
         spread = g_max - g_min
 
-        # Arm considered inactive when gripper barely moves
         if spread < 1e-4:
             norm = np.full_like(smoothed, 0.5)
             vel  = np.zeros_like(smoothed)
@@ -100,34 +81,50 @@ class PrimitiveSegmenter:
         vel  = np.gradient(norm) * self.cfg.fps
         return norm, vel
 
+    def _compute_ee_speed(self, states: np.ndarray, arm_indices: list) -> np.ndarray:
+        traj     = fk_trajectory(states, arm_indices)           # [T, 3]  metres
+        ee_vel   = np.gradient(traj, axis=0) * self.cfg.fps     # [T, 3]  m/s
+        speed    = np.linalg.norm(ee_vel, axis=1)               # [T]
+        # Smooth to suppress FK noise
+        speed    = gaussian_filter1d(speed, sigma=self.cfg.smooth_window / 3)
+        return speed
+
     # ------------------------------------------------------------------
     # State machine
     # ------------------------------------------------------------------
 
-    def _run_state_machine(self, g: np.ndarray, v: np.ndarray) -> np.ndarray:
+    def _run_state_machine(
+        self,
+        g:        np.ndarray,
+        v:        np.ndarray,
+        ee_speed: np.ndarray,
+    ) -> np.ndarray:
         cfg = self.cfg
         n   = len(g)
 
-        # If gripper doesn't move enough, everything is UNKNOWN
-        if g.std() < 0.02:
-            return np.array([PrimitiveType.UNKNOWN] * n)
-
-        # Determine initial state from first gripper value
-        state = PrimitiveType.REACH if g[0] >= 0.5 else PrimitiveType.MOVE
-
+        state  = PrimitiveType.IDLE
         labels = []
-        for i in range(n):
-            gi, vi = g[i], v[i]
 
-            if state == PrimitiveType.REACH:
+        for i in range(n):
+            gi = g[i]
+            vi = v[i]
+            si = ee_speed[i]
+
+            if state == PrimitiveType.IDLE:
+                if si > cfg.ee_speed_threshold:
+                    state = PrimitiveType.REACH
+
+            elif state == PrimitiveType.REACH:
                 if vi < cfg.closing_vel_threshold:
                     state = PrimitiveType.GRASP
+                elif si <= cfg.ee_speed_threshold:
+                    state = PrimitiveType.IDLE
 
             elif state == PrimitiveType.GRASP:
-                if gi < cfg.closed_threshold:
+                if si > cfg.ee_speed_threshold:
                     state = PrimitiveType.MOVE
                 elif vi > cfg.opening_vel_threshold:
-                    # gripper re-opened without achieving grasp → back to REACH
+                    # gripper re-opened before contact → aborted
                     state = PrimitiveType.REACH
 
             elif state == PrimitiveType.MOVE:
@@ -136,9 +133,12 @@ class PrimitiveSegmenter:
 
             elif state == PrimitiveType.RELEASE:
                 if gi > cfg.open_threshold:
-                    state = PrimitiveType.REACH          # completed a full cycle
+                    if si > cfg.ee_speed_threshold:
+                        state = PrimitiveType.REACH
+                    else:
+                        state = PrimitiveType.IDLE
                 elif vi < cfg.closing_vel_threshold:
-                    state = PrimitiveType.MOVE            # gripper closed again
+                    state = PrimitiveType.MOVE
 
             labels.append(state)
 
@@ -150,11 +150,11 @@ class PrimitiveSegmenter:
 
     def _labels_to_segments(
         self,
-        labels:       np.ndarray,
-        g_norm:       np.ndarray,
-        g_vel:        np.ndarray,
-        arm_joints:   np.ndarray,
-        arm:          str,
+        labels:        np.ndarray,
+        g_norm:        np.ndarray,
+        g_vel:         np.ndarray,
+        arm_joints:    np.ndarray,
+        arm:           str,
         episode_index: int,
     ) -> list[PrimitiveSegment]:
 
@@ -162,8 +162,9 @@ class PrimitiveSegmenter:
         segments: list[PrimitiveSegment] = []
         n = len(labels)
 
-        # Joint velocity magnitude (L2 norm across joints, per frame)
-        joint_vel = np.linalg.norm(np.gradient(arm_joints, axis=0) * cfg.fps, axis=1)
+        joint_vel = np.linalg.norm(
+            np.gradient(arm_joints, axis=0) * cfg.fps, axis=1
+        )
 
         i = 0
         while i < n:

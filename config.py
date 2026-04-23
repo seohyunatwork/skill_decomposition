@@ -28,6 +28,7 @@ class ALOHAConfig:
     closing_vel_threshold: float = -0.25   # dG/dt < this → gripper closing
     opening_vel_threshold: float = 0.25    # dG/dt > this → gripper opening
     min_segment_frames: int = 3            # discard segments shorter than this
+    ee_speed_threshold: float = 0.02       # EE speed (m/s) above which arm is "moving"
 
     # --- Output ---
     output_dir: str = "outputs"
