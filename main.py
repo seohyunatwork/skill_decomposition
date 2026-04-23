@@ -42,7 +42,7 @@ from config import ALOHAConfig
 from src.data.loader import EpisodeLoader
 from src.decomposition.segmenter import PrimitiveSegmenter
 from src.decomposition.primitives import PrimitiveType
-from src.visualization.visualizer import visualize_episode, visualize_summary
+from src.visualization.visualizer import visualize_episode, visualize_summary, visualize_ee_pose
 from src.visualization.video_exporter import VideoExporter
 
 
@@ -123,6 +123,8 @@ def main() -> None:
         if cfg.visualize:
             path = visualize_episode(result, ep_idx, loader.fps, cfg.output_dir)
             tqdm.write(f"  Saved figure → {path}")
+            ee_path = visualize_ee_pose(result, ep_idx, states, cfg, loader.fps, cfg.output_dir)
+            tqdm.write(f"  Saved EE pose → {ee_path}")
 
     # ---- Video export ----
     if export_video:
@@ -154,7 +156,7 @@ def main() -> None:
 
 
 def _print_summary(segments: list) -> None:
-    print("\n── Primitive Skill Statistics ──────────────────────────────")
+    print("\n── Primitive Skill Statistics ────────────────────────────────────")
     counts  : dict[str, int]        = defaultdict(int)
     dur_sum : dict[str, float]      = defaultdict(float)
 
@@ -172,7 +174,7 @@ def _print_summary(segments: list) -> None:
         print(f"  {arm:<5}  {prim:<10}  {n:>6}  {avg:>10.3f}")
 
     print(f"\n  Total segments: {len(segments)}")
-    print("────────────────────────────────────────────────────────────")
+    print("─" * 60)
 
 
 if __name__ == "__main__":

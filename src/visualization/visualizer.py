@@ -17,6 +17,7 @@ import matplotlib.patches as mpatches
 from matplotlib.collections import LineCollection
 
 from ..decomposition.primitives import PrimitiveType, PRIMITIVE_COLORS
+from ..kinematics.fk import fk_trajectory
 
 
 def _make_colored_line(x, y, colors, ax, lw=1.5):
@@ -146,6 +147,91 @@ def visualize_summary(all_episodes: list, output_dir: str) -> str:
 
     plt.tight_layout()
     path = os.path.join(output_dir, "summary_durations.png")
+    plt.savefig(path, dpi=120, bbox_inches="tight")
+    plt.close(fig)
+    return path
+
+
+def visualize_ee_pose(
+    episode_result: dict,
+    episode_index: int,
+    states: np.ndarray,
+    config,
+    fps: float,
+    output_dir: str,
+) -> str:
+    """
+    Plot end-effector X / Y / Z position over time for both arms,
+    colour-coded by primitive label.
+
+    Returns the path to the saved PNG.
+    """
+    os.makedirs(output_dir, exist_ok=True)
+
+    fig, axes = plt.subplots(3, 2, figsize=(14, 8), sharex=True)
+    fig.suptitle(
+        f"Episode {episode_index} — End-Effector Pose over Time", fontsize=13
+    )
+
+    axis_labels = ["X (m)", "Y (m)", "Z (m)"]
+    axis_colors = ["#e74c3c", "#2ecc71", "#3498db"]  # red, green, blue
+
+    for col, (arm, arm_indices) in enumerate([
+        ("left",  config.left_arm_indices),
+        ("right", config.right_arm_indices),
+    ]):
+        labels = episode_result[arm]["frame_labels"]
+        t      = np.arange(len(labels)) / fps
+        colors = _frame_colors(labels)
+
+        # Compute EE trajectory via FK
+        traj = fk_trajectory(states, arm_indices)   # [T, 3]
+
+        for row, (axis_val, ylabel, ac) in enumerate(
+            zip(traj.T, axis_labels, axis_colors)
+        ):
+            ax = axes[row, col]
+            ax.set_facecolor("#f8f9fa")
+
+            # Colour-coded line
+            _make_colored_line(t, axis_val, colors, ax, lw=1.8)
+
+            # Thin axis-colour underlay so axis identity is clear
+            ax.plot(t, axis_val, color=ac, lw=0.6, alpha=0.35)
+
+            # Shade primitive segments
+            for seg in episode_result[arm]["segments"]:
+                ax.axvspan(
+                    seg.start_frame / fps,
+                    seg.end_frame   / fps,
+                    alpha=0.10,
+                    color=PRIMITIVE_COLORS[seg.primitive_type],
+                )
+
+            ax.set_ylabel(ylabel, fontsize=9)
+            ax.axhline(0, color="grey", lw=0.5, ls="--", alpha=0.5)
+
+            if row == 0:
+                ax.set_title(f"{arm.capitalize()} arm", fontsize=10)
+
+    for col in range(2):
+        axes[-1, col].set_xlabel("Time (s)", fontsize=9)
+
+    # Legend
+    legend_patches = [
+        mpatches.Patch(color=PRIMITIVE_COLORS[p], label=p.value.capitalize())
+        for p in [PrimitiveType.REACH, PrimitiveType.GRASP,
+                  PrimitiveType.MOVE,  PrimitiveType.RELEASE,
+                  PrimitiveType.UNKNOWN]
+    ]
+    fig.legend(
+        handles=legend_patches,
+        loc="lower center", ncol=5, fontsize=9,
+        bbox_to_anchor=(0.5, -0.01),
+    )
+
+    plt.tight_layout(rect=[0, 0.04, 1, 1])
+    path = os.path.join(output_dir, f"episode_{episode_index:04d}_ee_pose.png")
     plt.savefig(path, dpi=120, bbox_inches="tight")
     plt.close(fig)
     return path
