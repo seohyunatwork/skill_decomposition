@@ -71,7 +71,7 @@ def visualize_episode(
     )
 
     row_labels = ["EE X (m)", "EE Y (m)", "EE Z (m)",
-                  "Gripper\n(norm)", "Velocity\n(norm/s)"]
+                  "Gripper\n(norm)", "Gripper velocity\n(norm/s)"]
     ee_colors  = ["#e74c3c", "#2ecc71", "#3498db"]
 
     for col, (arm, arm_indices) in enumerate([
