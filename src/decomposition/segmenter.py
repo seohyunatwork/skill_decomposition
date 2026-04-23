@@ -5,7 +5,7 @@ State definitions
 -----------------
   IDLE    : arm stationary, gripper not closing
   REACH   : arm moving (ee_speed > thr), gripper not yet closing
-  GRASP   : gripper closing (vel < 0) while arm is stationary (ee_speed <= thr)
+  GRASP   : gripper closing (vel < 0); arm may still be moving
   MOVE    : arm moving (ee_speed > thr) after a grasp cycle
   RELEASE : gripper opening (vel > 0) after MOVE
 
@@ -15,8 +15,7 @@ Transitions
   IDLE    -> GRASP   : g_vel < closing_thr AND ee_speed <= thr
 
   REACH   -> IDLE    : ee_speed <= thr (arm stops, gripper not closing)
-  REACH   -> GRASP   : g_vel < closing_thr AND ee_speed <= thr
-                       (gripper closing while arm is moving keeps state in REACH)
+  REACH   -> GRASP   : g_vel < closing_thr  (gripper closing is the strong signal)
 
   GRASP   -> MOVE    : ee_speed > thr
   GRASP   -> REACH   : g_vel > opening_thr  (aborted grasp)
@@ -131,7 +130,7 @@ class PrimitiveSegmenter:
                     state = PrimitiveType.GRASP
 
             elif state == PrimitiveType.REACH:
-                if closing(vi) and not moving(si):  # gripper closes only when arm stops
+                if closing(vi):        # gripper closing is the definitive grasp signal
                     state = PrimitiveType.GRASP
                 elif not moving(si):
                     state = PrimitiveType.IDLE
