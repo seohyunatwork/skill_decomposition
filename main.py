@@ -43,18 +43,20 @@ from src.data.loader import EpisodeLoader
 from src.decomposition.segmenter import PrimitiveSegmenter
 from src.decomposition.primitives import PrimitiveType
 from src.visualization.visualizer import visualize_episode, visualize_summary
+from src.visualization.video_exporter import VideoExporter
 
 
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
 
-def parse_args() -> ALOHAConfig:
+def parse_args():
     p = argparse.ArgumentParser(description="ALOHA primitive skill decomposer")
     p.add_argument("--dataset",       default="lerobot/aloha_sim_transfer_cube_human")
     p.add_argument("--episodes",      type=int,   default=5)
     p.add_argument("--output",        default="outputs/")
     p.add_argument("--no-visualize",  action="store_true")
+    p.add_argument("--no-video",      action="store_true")
     p.add_argument("--no-json",       action="store_true")
     p.add_argument("--local-root",    default=None)
     p.add_argument("--smooth-window", type=int,   default=7)
@@ -74,7 +76,7 @@ def parse_args() -> ALOHAConfig:
     if args.fps:
         cfg.fps = args.fps
 
-    return cfg
+    return args, cfg
 
 
 # ---------------------------------------------------------------------------
@@ -82,7 +84,7 @@ def parse_args() -> ALOHAConfig:
 # ---------------------------------------------------------------------------
 
 def main() -> None:
-    cfg = parse_args()
+    args, cfg = parse_args()
 
     print(f"Dataset : {cfg.dataset_repo_id}")
     print(f"Episodes: {cfg.n_episodes}")
@@ -92,30 +94,42 @@ def main() -> None:
     # ---- Setup ----
     loader    = EpisodeLoader(cfg)
     segmenter = PrimitiveSegmenter(cfg)
+    exporter  = VideoExporter(cfg, cfg.output_dir)
 
     print("Loading dataset …")
     loader.setup()
     print(f"  FPS: {loader.fps}   |   Episodes available: {loader.num_episodes}")
 
+    export_video = not args.no_video
+
     # ---- Process episodes ----
     all_results = []
     all_segments = []
+    episode_states = []  # keep states for video export
 
     for ep_idx, states in tqdm(
         loader.iter_episodes(), total=loader.num_episodes, desc="Decomposing"
     ):
         result = segmenter.segment_episode(states, ep_idx)
         all_results.append(result)
+        episode_states.append((ep_idx, states))
 
         # Collect flat segment list for JSON
         for arm in ("left", "right"):
             for seg in result[arm]["segments"]:
                 all_segments.append(seg.to_dict())
 
-        # Per-episode visualisation
+        # Per-episode PNG
         if cfg.visualize:
             path = visualize_episode(result, ep_idx, loader.fps, cfg.output_dir)
             tqdm.write(f"  Saved figure → {path}")
+
+    # ---- Video export ----
+    if export_video:
+        print("\nRendering videos …")
+        for (ep_idx, states), result in zip(episode_states, all_results):
+            paths = exporter.export_episode(result, ep_idx, states)
+            print(f"  Ep {ep_idx}: {len(paths)} video(s) → {os.path.dirname(paths[0])}")
 
     if not all_results:
         print("No episodes processed. Check dataset name / connectivity.")
