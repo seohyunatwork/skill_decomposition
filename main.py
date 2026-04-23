@@ -42,7 +42,7 @@ from config import ALOHAConfig
 from src.data.loader import EpisodeLoader
 from src.decomposition.segmenter import PrimitiveSegmenter
 from src.decomposition.primitives import PrimitiveType
-from src.visualization.visualizer import visualize_episode, visualize_summary, visualize_ee_pose
+from src.visualization.visualizer import visualize_episode, visualize_summary
 from src.visualization.video_exporter import VideoExporter
 
 
@@ -105,7 +105,7 @@ def main() -> None:
     # ---- Process episodes ----
     all_results = []
     all_segments = []
-    episode_states = []  # keep states for video export
+    episode_states = []
 
     for ep_idx, states in tqdm(
         loader.iter_episodes(), total=loader.num_episodes, desc="Decomposing"
@@ -114,17 +114,13 @@ def main() -> None:
         all_results.append(result)
         episode_states.append((ep_idx, states))
 
-        # Collect flat segment list for JSON
         for arm in ("left", "right"):
             for seg in result[arm]["segments"]:
                 all_segments.append(seg.to_dict())
 
-        # Per-episode PNG
         if cfg.visualize:
-            path = visualize_episode(result, ep_idx, loader.fps, cfg.output_dir)
+            path = visualize_episode(result, ep_idx, states, cfg, loader.fps, cfg.output_dir)
             tqdm.write(f"  Saved figure → {path}")
-            ee_path = visualize_ee_pose(result, ep_idx, states, cfg, loader.fps, cfg.output_dir)
-            tqdm.write(f"  Saved EE pose → {ee_path}")
 
     # ---- Video export ----
     if export_video:
@@ -137,13 +133,11 @@ def main() -> None:
         print("No episodes processed. Check dataset name / connectivity.")
         sys.exit(1)
 
-    # ---- Summary visualisation ----
     if cfg.visualize:
         summary_path = visualize_summary(all_results, cfg.output_dir)
         if summary_path:
             print(f"\nSummary figure → {summary_path}")
 
-    # ---- JSON output ----
     if cfg.save_json:
         os.makedirs(cfg.output_dir, exist_ok=True)
         json_path = os.path.join(cfg.output_dir, "segments.json")
@@ -151,7 +145,6 @@ def main() -> None:
             json.dump(all_segments, f, indent=2)
         print(f"Segments JSON  → {json_path}")
 
-    # ---- Console summary ----
     _print_summary(all_segments)
 
 
