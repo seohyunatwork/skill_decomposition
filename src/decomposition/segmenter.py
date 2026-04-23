@@ -1,19 +1,33 @@
 """
 EE-speed + gripper-velocity finite-state machine for primitive skill segmentation.
 
-State machine
--------------
-  IDLE    ──(ee_speed > thr)───────────────────► REACH
-  REACH   ──(ee_speed ≤ thr)──────────────────► IDLE
-  REACH   ──(gripper_vel < closing_thr)───────► GRASP
-  GRASP   ──(ee_speed > thr)──────────────────► MOVE
-  GRASP   ──(gripper_vel > opening_thr)───────► REACH   (aborted grasp)
-  MOVE    ──(gripper_vel > opening_thr)───────► RELEASE
-  RELEASE ──(gripper_norm > open_thr, slow EE)──► IDLE
-  RELEASE ──(gripper_norm > open_thr, fast EE)──► REACH
-  RELEASE ──(gripper_vel < closing_thr)───────► MOVE    (re-grasped)
+State definitions
+-----------------
+  IDLE    : arm stationary, gripper not closing
+  REACH   : arm moving (ee_speed > thr), gripper not yet closing
+  GRASP   : gripper closing (vel < 0) while arm is stationary (ee_speed <= thr)
+  MOVE    : arm moving (ee_speed > thr) after a grasp cycle
+  RELEASE : gripper opening (vel > 0) after MOVE
 
-RELEASE can only be reached from MOVE (i.e., after a GRASP cycle).
+Transitions
+-----------
+  IDLE    -> REACH   : ee_speed > thr
+  IDLE    -> GRASP   : g_vel < closing_thr AND ee_speed <= thr
+
+  REACH   -> IDLE    : ee_speed <= thr (arm stops, gripper not closing)
+  REACH   -> GRASP   : g_vel < closing_thr AND ee_speed <= thr
+                       (gripper closing while arm is moving keeps state in REACH)
+
+  GRASP   -> MOVE    : ee_speed > thr
+  GRASP   -> REACH   : g_vel > opening_thr  (aborted grasp)
+
+  MOVE    -> RELEASE : g_vel > opening_thr
+
+  RELEASE -> IDLE    : g_norm > open_thr AND ee_speed <= thr
+  RELEASE -> REACH   : g_norm > open_thr AND ee_speed > thr
+  RELEASE -> MOVE    : g_vel < closing_thr  (re-grasped)
+
+RELEASE can only be reached via MOVE, never at episode start.
 """
 
 import numpy as np
@@ -82,11 +96,10 @@ class PrimitiveSegmenter:
         return norm, vel
 
     def _compute_ee_speed(self, states: np.ndarray, arm_indices: list) -> np.ndarray:
-        traj     = fk_trajectory(states, arm_indices)           # [T, 3]  metres
-        ee_vel   = np.gradient(traj, axis=0) * self.cfg.fps     # [T, 3]  m/s
-        speed    = np.linalg.norm(ee_vel, axis=1)               # [T]
-        # Smooth to suppress FK noise
-        speed    = gaussian_filter1d(speed, sigma=self.cfg.smooth_window / 3)
+        traj   = fk_trajectory(states, arm_indices)          # [T, 3]  metres
+        ee_vel = np.gradient(traj, axis=0) * self.cfg.fps    # [T, 3]  m/s
+        speed  = np.linalg.norm(ee_vel, axis=1)              # [T]
+        speed  = gaussian_filter1d(speed, sigma=self.cfg.smooth_window / 3)
         return speed
 
     # ------------------------------------------------------------------
@@ -99,45 +112,44 @@ class PrimitiveSegmenter:
         v:        np.ndarray,
         ee_speed: np.ndarray,
     ) -> np.ndarray:
-        cfg = self.cfg
-        n   = len(g)
-
+        cfg    = self.cfg
+        n      = len(g)
         state  = PrimitiveType.IDLE
         labels = []
 
+        moving  = lambda s: s > cfg.ee_speed_threshold
+        closing = lambda vel: vel < cfg.closing_vel_threshold
+        opening = lambda vel: vel > cfg.opening_vel_threshold
+
         for i in range(n):
-            gi = g[i]
-            vi = v[i]
-            si = ee_speed[i]
+            gi, vi, si = g[i], v[i], ee_speed[i]
 
             if state == PrimitiveType.IDLE:
-                if si > cfg.ee_speed_threshold:
+                if moving(si):
                     state = PrimitiveType.REACH
+                elif closing(vi):           # arm stopped, gripper starts closing
+                    state = PrimitiveType.GRASP
 
             elif state == PrimitiveType.REACH:
-                if vi < cfg.closing_vel_threshold:
+                if closing(vi) and not moving(si):  # gripper closes only when arm stops
                     state = PrimitiveType.GRASP
-                elif si <= cfg.ee_speed_threshold:
+                elif not moving(si):
                     state = PrimitiveType.IDLE
 
             elif state == PrimitiveType.GRASP:
-                if si > cfg.ee_speed_threshold:
+                if moving(si):
                     state = PrimitiveType.MOVE
-                elif vi > cfg.opening_vel_threshold:
-                    # gripper re-opened before contact → aborted
+                elif opening(vi):           # aborted: gripper re-opened without lift
                     state = PrimitiveType.REACH
 
             elif state == PrimitiveType.MOVE:
-                if vi > cfg.opening_vel_threshold:
+                if opening(vi):
                     state = PrimitiveType.RELEASE
 
             elif state == PrimitiveType.RELEASE:
                 if gi > cfg.open_threshold:
-                    if si > cfg.ee_speed_threshold:
-                        state = PrimitiveType.REACH
-                    else:
-                        state = PrimitiveType.IDLE
-                elif vi < cfg.closing_vel_threshold:
+                    state = PrimitiveType.REACH if moving(si) else PrimitiveType.IDLE
+                elif closing(vi):
                     state = PrimitiveType.MOVE
 
             labels.append(state)
